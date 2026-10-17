@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 analysis_result.json
+
+# Maven / Java build output
+backend/target/
+*.class

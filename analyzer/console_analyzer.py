@@ -8,6 +8,10 @@ import json
 import hashlib
 import pefile
 
+class PEAnalysisError(Exception):
+    """PE 파일을 분석할 수 없을 때 발생시키는 예외 (파일 없음, PE 형식 아님 등)."""
+
+
 MIN_STRING_LENGTH = 4          # 이보다 짧은 문자열은 노이즈로 보고 제외한다
 HIGH_ENTROPY_THRESHOLD = 7.5   # 이 값 이상이면 패킹/암호화 가능성으로 본다
 SUSPICIOUS_IMPORTS = {
@@ -135,19 +139,22 @@ def find_suspicious_indicators(sections: list, imports: list) -> list:
     return findings
 
 
-def analyze_pe(file_path: str) -> dict | None:
+def analyze_pe(file_path: str) -> dict:
     """
     주어진 경로의 파일을 PE 구조로 열어서 전체 정보를 분석하고,
-    결과를 담은 딕셔너리를 돌려준다. PE가 아니면 None을 돌려준다.
+    결과를 담은 딕셔너리를 돌려준다.
+
+    파일을 분석할 수 없으면(존재하지 않거나 PE 형식이 아니면) PEAnalysisError를 던진다.
+    (콘솔에서 쓰든, 나중에 Spring Boot가 이 스크립트를 서브프로세스로 호출하든
+     "실패 이유"를 호출한 쪽이 직접 판단해서 처리할 수 있도록, 여기서 바로
+     print하지 않고 예외로 알리는 방식을 쓴다.)
     """
     try:
         pe = pefile.PE(file_path)
     except pefile.PEFormatError:
-        print("이 파일은 올바른 PE 파일이 아닙니다.")
-        return None
+        raise PEAnalysisError("이 파일은 올바른 PE 파일이 아닙니다.")
     except FileNotFoundError:
-        print(f"파일을 찾을 수 없습니다: {file_path}")
-        return None
+        raise PEAnalysisError(f"파일을 찾을 수 없습니다: {file_path}")
 
     entry_point_rva = pe.OPTIONAL_HEADER.AddressOfEntryPoint
     image_base = pe.OPTIONAL_HEADER.ImageBase
@@ -222,18 +229,40 @@ def print_human_readable(result: dict) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("사용법: python console_analyzer.py <분석할 exe 파일 경로>")
+    # 사용법 1 (사람이 직접 터미널에서 실행):
+    #     python console_analyzer.py <파일경로>
+    #   -> 보기 좋은 텍스트로 출력 + analysis_result.json 파일 저장
+    #
+    # 사용법 2 (Spring Boot 같은 다른 프로그램이 서브프로세스로 호출):
+    #     python console_analyzer.py <파일경로> --json
+    #   -> 다른 출력 없이 JSON 한 줄만 표준출력(stdout)으로 내보냄
+    #      (서버가 이 stdout을 그대로 읽어서 파싱하기 쉽도록)
+    args = sys.argv[1:]
+    json_mode = "--json" in args
+    positional_args = [a for a in args if a != "--json"]
+
+    if len(positional_args) != 1:
+        print("사용법: python console_analyzer.py <분석할 exe 파일 경로> [--json]")
         sys.exit(1)
 
-    target_file = sys.argv[1]
-    analysis_result = analyze_pe(target_file)
+    target_file = positional_args[0]
 
-    if analysis_result is not None:
+    try:
+        analysis_result = analyze_pe(target_file)
+    except PEAnalysisError as e:
+        if json_mode:
+            # 서버 쪽에서 파싱하기 쉽도록 에러도 JSON 형태로 표준에러(stderr)에 내보낸다.
+            print(json.dumps({"error": str(e)}, ensure_ascii=False), file=sys.stderr)
+        else:
+            print(str(e))
+        sys.exit(1)
+
+    if json_mode:
+        print(json.dumps(analysis_result, ensure_ascii=False))
+    else:
         print_human_readable(analysis_result)
 
-        # 사람이 보는 출력과는 별도로, 나중에 Spring Boot와 연동할 때 쓸
-        # JSON 결과를 analysis_result.json 파일로 저장해둔다.
+        # 사람이 보는 출력과는 별도로, JSON 결과를 파일로도 저장해둔다.
         with open("analysis_result.json", "w", encoding="utf-8") as f:
             json.dump(analysis_result, f, ensure_ascii=False, indent=2)
         print("\n(분석 결과가 analysis_result.json 파일로 저장되었습니다.)")
