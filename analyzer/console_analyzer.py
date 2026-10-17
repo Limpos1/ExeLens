@@ -3,6 +3,7 @@
 
 import sys          # 명령줄 인자(파일 경로)를 받기 위해 사용
 import pefile        # PE 파일 구조를 파싱해주는 외부 라이브러리
+import hashlib
 
 
 def analyze_pe(file_path: str) -> None:
@@ -56,6 +57,7 @@ def analyze_pe(file_path: str) -> None:
     entry_point_va = image_base + entry_point_rva
 
     # 6) 지금까지 구한 정보를 보기 좋게 출력한다.
+
     print("=" * 40)
     print(f"파일 경로       : {file_path}")
     print(f"PE 형식         : {pe_type}")
@@ -84,8 +86,55 @@ def analyze_pe(file_path: str) -> None:
         permissions += "W" if is_writable else "-"
         permissions += "X" if is_executable else "-"
 
+        entropy = section.get_entropy()
+
         print(f"  {name:<10} 가상크기: 0x{section.Misc_VirtualSize:X}  "
-              f"실제크기: 0x{section.SizeOfRawData:X}  권한: {permissions}")
+              f"실제크기: 0x{section.SizeOfRawData:X}  권한: {permissions}"
+            f"엔트로피: {entropy:.2f}")
+
+            # 8) 이 파일이 가져다 쓰는 DLL과 함수 목록을 확인한다 (Import Table).
+    #    pefile은 import 정보가 있을 때만 DIRECTORY_ENTRY_IMPORT 속성을 만들어준다.
+    #    (DLL 같은 일부 파일은 import가 없을 수도 있어서 hasattr로 먼저 확인한다.)
+    print("\n[Import DLL 목록]")
+    if hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
+        for entry in pe.DIRECTORY_ENTRY_IMPORT:
+            # DLL 이름도 bytes라서 decode 해준다.
+            dll_name = entry.dll.decode(errors="ignore")
+            print(f"  {dll_name}")
+
+            # 각 DLL에서 가져오는 함수들을 하나씩 출력한다.
+            for imported_func in entry.imports:
+                # 함수를 이름이 아니라 번호(ordinal)로만 가져오는 경우도 있어서
+                # name이 None일 수 있다. 그럴 땐 번호를 대신 보여준다.
+                if imported_func.name is not None:
+                    func_name = imported_func.name.decode(errors="ignore")
+                else:
+                    func_name = f"(ordinal {imported_func.ordinal})"
+                print(f"      - {func_name}")
+    else:
+        print("  Import 정보가 없습니다.")
+
+        # 9) 파일 안에 박혀있는 읽을 수 있는 문자열을 추출한다.
+    #    pe.__data__ 에는 pefile이 파일을 열 때 읽어둔 전체 바이트가 그대로 들어있다.
+    #    (파일을 다시 열 필요 없이 이미 메모리에 있는 걸 재사용하는 것)
+    import re
+
+    MIN_STRING_LENGTH = 4  # 너무 짧은 건 의미 없는 문자열일 가능성이 높아서 제외
+
+    # 정규식 설명:
+    #   [\x20-\x7e] -> 공백(0x20)부터 ~ (0x7e) 사이, 즉 "출력 가능한 아스키 문자" 하나
+    #   {4,}        -> 그런 문자가 4개 이상 연속으로 나타나는 부분을 찾는다
+    pattern = rb"[\x20-\x7e]{%d,}" % MIN_STRING_LENGTH
+    found_strings = re.findall(pattern, pe.__data__)
+
+    print(f"\n[문자열 추출] (총 {len(found_strings)}개 중 앞 20개만 출력)")
+    for s in found_strings[:20]:
+        # 여기서도 bytes이므로 decode 해서 사람이 읽을 수 있는 문자열로 바꾼다.
+        print(f"  {s.decode(errors='ignore')}")
+
+    sha256_hash = hashlib.sha256(pe.__data__).hexdigest()
+    print(f"\nSHA-256          : {sha256_hash}")
+    
     print("=" * 40)
 
     # 다 쓴 PE 객체는 명시적으로 닫아준다 (파일 핸들 정리).
