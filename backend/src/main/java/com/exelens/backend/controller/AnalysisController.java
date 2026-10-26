@@ -1,9 +1,14 @@
 package com.exelens.backend.controller;
 
+import com.exelens.backend.dto.AnalysisRecordResponse;
 import com.exelens.backend.dto.AnalysisResult;
+import com.exelens.backend.dto.AnalysisSummary;
 import com.exelens.backend.exception.InvalidFileException;
+import com.exelens.backend.service.AnalysisHistoryService;
 import com.exelens.backend.service.PeAnalyzerService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -14,12 +19,18 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
- * 파일 업로드를 받아서 분석 결과를 돌려주는 API.
+ * 파일 업로드 -> 분석 -> 저장 -> 조회까지 담당하는 API.
  *
- * 흐름: 업로드된 파일 검증 -> 임시 파일로 저장 -> 분석 서비스 호출 -> 결과 반환 -> 임시 파일 삭제
- * 실제 분석 로직(Python 프로세스 호출 등)은 전부 PeAnalyzerService에 위임한다.
+ * 흐름: 업로드된 파일 검증 -> 임시 파일로 저장 -> 분석 서비스 호출
+ *       -> 이력 저장 서비스에 결과 저장 -> 저장된 결과 반환 -> 임시 파일 삭제
+ *
+ * 역할 분리:
+ * - PeAnalyzerService    : Python 분석 모듈을 호출해서 "분석 결과"를 얻어오는 일만 한다.
+ * - AnalysisHistoryService: 분석 결과를 DB에 "저장"하고, 저장된 이력을 "조회"하는 일만 한다.
+ * - AnalysisController   : 요청을 받아서 위 두 서비스에 순서대로 일을 시키고, 응답을 만든다.
  */
 @RestController
 @RequestMapping("/api")
@@ -30,22 +41,36 @@ public class AnalysisController {
     private static final byte[] PE_MAGIC_BYTES = {0x4D, 0x5A};
 
     private final PeAnalyzerService peAnalyzerService;
+    private final AnalysisHistoryService analysisHistoryService;
 
-    public AnalysisController(PeAnalyzerService peAnalyzerService) {
+    public AnalysisController(PeAnalyzerService peAnalyzerService,
+                               AnalysisHistoryService analysisHistoryService) {
         this.peAnalyzerService = peAnalyzerService;
+        this.analysisHistoryService = analysisHistoryService;
     }
 
     @PostMapping("/analyze")
-    public ResponseEntity<AnalysisResult> analyze(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<AnalysisRecordResponse> analyze(@RequestParam("file") MultipartFile file) {
         validate(file);
 
         Path tempFile = saveToTempFile(file);
         try {
             AnalysisResult result = peAnalyzerService.analyze(tempFile);
-            return ResponseEntity.ok(result);
+            AnalysisRecordResponse saved = analysisHistoryService.save(result, file.getOriginalFilename());
+            return ResponseEntity.ok(saved);
         } finally {
             deleteQuietly(tempFile);
         }
+    }
+
+    @GetMapping("/analyses")
+    public ResponseEntity<List<AnalysisSummary>> listAnalyses() {
+        return ResponseEntity.ok(analysisHistoryService.listSummaries());
+    }
+
+    @GetMapping("/analyses/{id}")
+    public ResponseEntity<AnalysisRecordResponse> getAnalysis(@PathVariable Long id) {
+        return ResponseEntity.ok(analysisHistoryService.getById(id));
     }
 
     private void validate(MultipartFile file) {

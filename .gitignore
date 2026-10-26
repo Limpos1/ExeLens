@@ -5,3 +5,6 @@ analysis_result.json
 # Maven / Java build output
 backend/target/
 *.class
+
+# H2 database files (로컬 분석 이력 데이터, 사람마다 다르므로 커밋하지 않는다)
+backend/data/

@@ -39,6 +39,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.unprocessableEntity().body(new ErrorResponse(e.getMessage()));
     }
 
+    // 존재하지 않는 분석 이력을 조회한 경우 -> 404 Not Found
+    @ExceptionHandler(AnalysisNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleAnalysisNotFound(AnalysisNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(e.getMessage()));
+    }
+
     // 예상하지 못한 나머지 모든 예외 -> 500 Internal Server Error
     // (내부 오류의 자세한 내용을 클라이언트에 그대로 노출하지 않고, 서버 로그에만 남긴다)
     @ExceptionHandler(Exception.class)
